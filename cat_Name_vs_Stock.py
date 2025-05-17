@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from scipy.stats import pearsonr
 from openpyxl import Workbook
 from openpyxl.chart import LineChart, Reference
+from openpyxl.styles import numbers
 from openpyxl.utils.dataframe import dataframe_to_rows
 
 # ----------------------------
@@ -27,9 +28,23 @@ def get_cat_names(num_pages=5):
 def get_stock_data(symbol='^GSPC', days_back=30):
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days_back)
-    data = yf.download(symbol, start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'))
-    data.reset_index(inplace=True)
-    return data[['Date', 'Close']]
+
+    df = yf.download(symbol, start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'))
+
+    # Flatten multi-level columns (e.g., ('Close', '^GSPC')) to single level
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = ['_'.join(col).strip() for col in df.columns.values]
+
+    df.reset_index(inplace=True)
+
+    # Find the Close column
+    close_col = next((col for col in df.columns if 'Close' in col), None)
+    if not close_col:
+        raise ValueError("No Close column found in stock data")
+
+    # Standardize output
+    return df[['Date', close_col]].rename(columns={close_col: 'Close'})
+
 
 # ----------------------------
 # PART 3: PREP CAT DATA
@@ -68,7 +83,6 @@ def analyze_cats_vs_stocks(cat_df, stock_df):
 
         fig.tight_layout()
         plt.title("Finance-Inspired Cat Names vs S&P 500")
-
         plt.savefig("Cat_vs_Stock_Chart.png")
         print("✅ Chart saved as 'Cat_vs_Stock_Chart.png'")
 
@@ -94,22 +108,31 @@ def export_reports(merged_df, correlation, p_value):
         ws_data = wb.active
         ws_data.title = "Cat vs Stock Data"
 
+        # Write data
         for r in dataframe_to_rows(merged_df, index=False, header=True):
             ws_data.append(r)
 
+        # Apply date formatting
+        for cell in ws_data['A'][1:]:  # Skip header
+            cell.number_format = numbers.FORMAT_DATE_YYYYMMDD2
+
+        # Create chart
         chart = LineChart()
         chart.title = "Finance Cat Names vs S&P 500"
         chart.y_axis.title = "Count / Close Price"
         chart.x_axis.title = "Date"
+        chart.style = 13  # Smooth line style
 
-        data = Reference(ws_data, min_col=ws_data["B1"].column, max_col=ws_data["C1"].column,
-                         min_row=1, max_row=ws_data.max_row)
-        cats = Reference(ws_data, min_col=ws_data["A2"].column, min_row=2, max_row=ws_data.max_row)
+        data = Reference(ws_data, min_col=2, max_col=3, min_row=1, max_row=ws_data.max_row)
+        cats = Reference(ws_data, min_col=1, min_row=2, max_row=ws_data.max_row)
         chart.add_data(data, titles_from_data=True)
         chart.set_categories(cats)
 
+        chart.height = 10
+        chart.width = 20
         ws_data.add_chart(chart, "E5")
 
+        # Summary sheet
         ws_summary = wb.create_sheet(title="Summary")
         ws_summary["A1"] = "Cat Names vs Stock Market Report Summary"
         ws_summary["A3"] = f"Pearson Correlation Coefficient: {correlation:.3f}"
@@ -145,8 +168,15 @@ if __name__ == '__main__':
     print("Downloading stock data...")
     stock_df = get_stock_data()
 
+    # 🔍 Debug output
+    print("\n[DEBUG] Stock DataFrame columns:")
+    print(stock_df.columns)
+    print("[DEBUG] Data types:")
+    print(stock_df.dtypes)
+
     print("Analyzing and visualizing...")
     merged, correlation, p_value = analyze_cats_vs_stocks(cat_df, stock_df)
+
 
     if merged is not None:
         print("Generating Excel and CSV report...")
